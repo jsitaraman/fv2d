@@ -13,7 +13,7 @@ solver.initData()
 # show some plots
 solver.output()
 dt=0.02
-for i in range(500):
+for i in range(50):
    print(f"i={i}")
    solver.advance(dt)
 solver.output()

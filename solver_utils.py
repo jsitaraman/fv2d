@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import matplotlib.tri as mtri
 from scipy.interpolate import griddata
 import numpy as np
+from flux import roeflux
 
 class solver_utils:
     def __init__(self, use_cupy=False):
@@ -106,7 +107,8 @@ class solver_utils:
             # its start location at (10,5) now
             vortex=IsentropicVortex()
             qline_exact=vortex.init_Q(np.vstack((xline,yline)).T,
-                         x0=10.0+uinf*time,y0=5,uinf=uinf,vinf=0)
+                                      x0=10.0+self.uinf*time,y0=5,
+                                      uinf=self.uinf,vinf=self.vinf)
             ax2.plot(xline, qline_exact[:,0], "r-", lw=1.5)
         ax2.set_xlabel("x")
         ax2.set_ylabel(field)
@@ -347,7 +349,8 @@ class solver_utils:
                  edge2elem,   # (Nedge,2) left/right element ids; -1 on boundary
                  ncells,
                  gradQ=None,  # optional (Ne,4,2) gradients for linear recon; None => 1st order
-                 bc_type=None # optional (Nedge,) strings: "internal"|"farfield"|"wall"
+                 bc_type=None, # optional (Nedge,) strings: "internal"|"farfield"|"wall"
+                 fluxType="Roe"
                  ):
         """
         Vectorized finite-volume residual for 2D Euler using Rusanov flux.
@@ -381,7 +384,7 @@ class solver_utils:
 
         # --- orient normals from left -> right (or outward for boundary) ---
         nx = xp.empty(Nedge)
-        ny = xp.empty(Nedge)
+        ny = xp.empty(Nedge)        
 
         # internal edges: orient with vector from L centroid to R centroid
         if xp.any(internal_mask):
@@ -461,22 +464,27 @@ class solver_utils:
 
             # copy back
             UR[bnd_mask] = UR_b
+        if fluxType=="Lax" or fluxType=="Rusanov":
+            # --- Rusanov flux: F* = 0.5[(F_L + F_R)·n - smax (UR - UL)] ---
+            FLn = self._flux_dot_n(UL, nx, ny)
+            FRn = self._flux_dot_n(UR, nx, ny)
+            
+            # wavespeed
+            rhoL, uL, vL, pL = self._cons_to_prims(UL)
+            aL = xp.sqrt(gamma * pL / rhoL)
+            rhoR, uR, vR, pR = self._cons_to_prims(UR)
 
-        # --- Rusanov flux: F* = 0.5[(F_L + F_R)·n - smax (UR - UL)] ---
-        FLn = self._flux_dot_n(UL, nx, ny)
-        FRn = self._flux_dot_n(UR, nx, ny)
+            aR = xp.sqrt(gamma * pR / rhoR)
+            vnL = uL*nx + vL*ny
+            vnR = uR*nx + vR*ny
+            smax = xp.maximum(xp.abs(vnL) + aL, xp.abs(vnR) + aR)
 
-        # wavespeed
-        rhoL, uL, vL, pL = self._cons_to_prims(UL)
-        aL = xp.sqrt(gamma * pL / rhoL)
-        rhoR, uR, vR, pR = self._cons_to_prims(UR)
-
-        aR = xp.sqrt(gamma * pR / rhoR)
-        vnL = uL*nx + vL*ny
-        vnR = uR*nx + vR*ny
-        smax = xp.maximum(xp.abs(vnL) + aL, xp.abs(vnR) + aR)
-
-        Fe = 0.5 * (FLn + FRn - smax[:, None] * (UR - UL))  # (Nedge,4)
+            Fe = 0.5 * (FLn + FRn - smax[:, None] * (UR - UL))  # (Nedge,4)
+        elif fluxType == "Roe":
+            ds=xp.vstack((nx,ny)).T
+            faceVel=xp.zeros((UL.shape[0],))
+            Fe,_ = roeflux(UL,UR,ds,faceVel)
+            
         # integrate over edge length (flux per edge)
         Fe *= L[:, None]
 

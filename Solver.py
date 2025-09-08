@@ -54,13 +54,13 @@ class Solver:
                     'uinf'  : 0.5,
                     'vinf'  : 0.0,
                     'rinf'  : 1.0,
-                    'pinf'  : 1.0/gamma}
+                    'pinf'  : 1.0/1.4}
         self.gamma= self.props['gamma']
         self.uinf = self.props['uinf']
         self.vinf = self.props['vinf']
         self.rinf = self.props['rinf']
         self.pinf = self.props['pinf']
-        self.su.setParams(props)
+        self.su.setParams(self.props)
         self.time=0
         self.nq=4
         # generate an isentropic vortex
@@ -72,7 +72,7 @@ class Solver:
         
     def output(self):
         self.su.plot_field_with_cut(self.coords[:,:2],self.elems,self.q, y0=5.0,
-                                    uinf=self.uinf, time=self.time)
+                                    time=self.time)
         # tecplot_file='test.dat')
 
 
@@ -202,7 +202,7 @@ class Solver:
                            self.centroids[:,:2],
                            self.coords[:,:2], 
                            self.edges,
-                           self.edge2elem, self.nelem) # gradQ=grads)
+                           self.edge2elem, self.nelem, gradQ=grads)
         return -R/self.areas
     
     def advance(self,dt,scheme="RK3"):
