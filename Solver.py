@@ -204,6 +204,40 @@ class Solver:
                            self.edges,
                            self.edge2elem, self.nelem, gradQ=grads)
         return -R/self.areas
+
+    def fd_check(self, Qc, dq):
+        """Finite-difference check for Jacobian–vector product."""
+        R0 = self.residual(Qc)       # baseline residual
+        R1 = self.residual(Qc + dq)  # perturbed residual
+        return (R1 - R0)             # approximate J*dq
+
+    def checkJac_fd(self):
+        xp=self.xp
+        eps=1e-6
+        dq_test = xp.random.randn(self.q.shape[0],4)*eps
+        dq_test[self.nelem:,...]=0
+        Jdq_fd = self.fd_check(self.q,dq_test)
+        Ff=self.su.fullJacobianProduct(dq_test,self.q,self.centroids[:,:2],self.coords[:,:2],
+                                       self.edges,self.edge2elem, self.nelem)
+        Ff=-Ff/self.areas
+        print("Jdq_fd=",Jdq_fd)
+        print("Ff=",Ff)
+        print("‖FD - Matvec‖ =", xp.linalg.norm(Jdq_fd[:self.nelem,:] - Ff[:self.nelem,:]))
+        
+    def jacobian_check(self,q):
+        xp=self.xp
+        eps=1e-8
+        dq_test = xp.random.randn(self.q.shape[0],4)*eps
+        dq_test[self.nelem:,...]=0
+
+        Fd=self.su.diagProduct(dq_test,q,self.centroids[:,:2],self.coords[:,:2],
+                               self.edges,self.edge2elem, self.nelem)
+        Fo=self.su.offDiagProduct(dq_test,q,self.centroids[:,:2],self.coords[:,:2],
+                                  self.edges,self.edge2elem,self.nelem)
+        Ff=self.su.fullJacobianProduct(dq_test,q,self.centroids[:,:2],self.coords[:,:2],
+                                       self.edges,self.edge2elem, self.nelem)
+
+        print("‖(Fd+Fo) - Ff‖ =", xp.linalg.norm((Fd + Fo) - Ff))
     
     def advance(self,dt,scheme="RK3"):
         self.time+=dt

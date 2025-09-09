@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import matplotlib.tri as mtri
 from scipy.interpolate import griddata
 import numpy as np
-from flux import roeflux
+from flux import roeflux,  flux_jacobians_fd
 
 class solver_utils:
     def __init__(self, use_cupy=False):
@@ -339,25 +339,29 @@ class solver_utils:
         F2 = U[...,2]*vn + ny * p
         F3 = (U[...,3] + p) * vn
         return xp.stack((F0, F1, F2, F3), axis=-1)
-    
-    # --- main: residual ---
-    def residual(self,
-                 Qc,          # (Ne,4) cell-centered conservative variables
-                 Xc,          # (Ne,2) element centroids
-                 Xv,          # (Nv,2) node coordinates
-                 edges,       # (Nedge,2) node index pairs
-                 edge2elem,   # (Nedge,2) left/right element ids; -1 on boundary
-                 ncells,
-                 gradQ=None,  # optional (Ne,4,2) gradients for linear recon; None => 1st order
-                 bc_type=None, # optional (Nedge,) strings: "internal"|"farfield"|"wall"
-                 fluxType="Roe"
-                 ):
-        """
-        Vectorized finite-volume residual for 2D Euler using Rusanov flux.
 
-        Returns:
-            R : (Ne,4) residual (sum of fluxes over edges, outward positive)
+    def safe_add_at(self, arr, indices, values):
         """
+        Safe in-place accumulation:
+        - NumPy backend: uses np.add.at (deterministic)
+        - CuPy backend: uses cupyx.scatter_add (atomic)
+        
+        Args:
+        xp      : numpy or cupy module
+        arr     : target array
+        indices : integer indices (broadcastable to values)
+        values  : array of values to add
+        """
+        if self.xp.__name__ == "numpy":
+            self.xp.add.at(arr, indices, values)
+        elif self.xp.__name__ == "cupy":
+            import cupyx
+            cupyx.scatter_add(arr, indices, values)
+        else:
+            raise TypeError(f"Unsupported xp module: {xp}")
+
+    def getLeftRightStates(self, Qc, Xc, Xv, edges, edge2elem, ncell, gradQ, bc_type):
+        
         xp = self.xp
         Ne = Qc.shape[0]
         Nedge = edges.shape[0]
@@ -464,6 +468,30 @@ class solver_utils:
 
             # copy back
             UR[bnd_mask] = UR_b
+        return UL,UR,nx,ny, Lidx, Ridx, L
+        
+    # --- main: residual ---
+    def residual(self,
+                 Qc,          # (Ne,4) cell-centered conservative variables
+                 Xc,          # (Ne,2) element centroids
+                 Xv,          # (Nv,2) node coordinates
+                 edges,       # (Nedge,2) node index pairs
+                 edge2elem,   # (Nedge,2) left/right element ids; -1 on boundary
+                 ncells,
+                 gradQ=None,  # optional (Ne,4,2) gradients for linear recon; None => 1st order
+                 bc_type=None, # optional (Nedge,) strings: "internal"|"farfield"|"wall"
+                 fluxType="Roe"
+                 ):
+        """
+        Vectorized finite-volume residual for 2D Euler using Rusanov flux.
+
+        Returns:
+            R : (Ne,4) residual (sum of fluxes over edges, outward positive)
+        """
+        xp=self.xp
+        UL,UR,nx,ny, Lidx, Ridx, L = self.getLeftRightStates( Qc, Xc, Xv, edges,
+                                                           edge2elem, ncells,
+                                                           gradQ, bc_type)
         if fluxType=="Lax" or fluxType=="Rusanov":
             # --- Rusanov flux: F* = 0.5[(F_L + F_R)·n - smax (UR - UL)] ---
             FLn = self._flux_dot_n(UL, nx, ny)
@@ -491,10 +519,147 @@ class solver_utils:
         # --- scatter to residuals (left +, right -) ---
         R = xp.zeros_like(Qc)
         mask = Lidx < ncells
-        xp.add.at(R, Lidx[mask],  Fe[mask])
+        self.safe_add_at(R, Lidx[mask],  Fe[mask])
         # only subtract for valid right neighbors
         mask = (Ridx >= 0 ) & (Ridx < ncells)
         if xp.any(mask):
-            xp.add.at(R, Ridx[mask], -Fe[mask])
+            self.safe_add_at(R, Ridx[mask], -Fe[mask])
         return R
+
+    # --- main: residual ---
+    def JacobiansDiag(self,
+                      Qc,          # (Ne,4) cell-centered conservative variables
+                      Xc,          # (Ne,2) element centroids
+                      Xv,          # (Nv,2) node coordinates
+                      edges,       # (Nedge,2) node index pairs
+                      edge2elem,   # (Nedge,2) left/right element ids; -1 on boundary
+                      ncells,
+                      gradQ=None,  # optional (Ne,4,2) gradients for linear recon; None => 1st order
+                      bc_type=None, # optional (Nedge,) strings: "internal"|"farfield"|"wall"
+                      fluxType="Roe"
+                      ):        
+        """
+        Vectorized finite-volume Jacobians 
+
+        Returns:
+            D : (Ne, 4, 4)
+            O : (Ne, max_neigh, 4, 4)
+        """
+        xp=self.xp
+        UL,UR,nx,ny, Lidx, Ridx, L = self.getLeftRightStates( Qc, Xc, Xv, edges,
+                                                           edge2elem, ncells,
+                                                           gradQ, bc_type)
+        ds=xp.vstack((nx,ny)).T
+        faceVel=xp.zeros((UL.shape[0],))
+        jacL,jacR = flux_jacobians_fd(UL,UR,ds,faceVel, xp=self.xp)
+            
+        # integrate over edge length (flux per edge)
+        jacL *= L[:,None,None]
+        jacR *= L[:,None,None]
+
+        # --- scatter to residuals (left +, right -) ---
+        D = xp.zeros((Qc.shape[0],4,4),'d')
+        mask = Lidx < ncells
+        self.safe_add_at(D, Lidx[mask],  jacL[mask])
+        # only subtract for valid right neighbors
+        mask = (Ridx >= 0 ) & (Ridx < ncells)
+        if xp.any(mask):
+            self.safe_add_at(D, Ridx[mask], -jacR[mask])
+        return D
+
+    # ---------------------------------------------------------
+    # Full Jacobian–vector product (diag + offdiag together)
+    # ---------------------------------------------------------
+    def fullJacobianProduct(self, dq, Qc, Xc, Xv, edges, edge2elem, ncells,
+                            gradQ=None, bc_type=None, fluxType="Roe"):
+        """
+        Full Jacobian–vector product (diag + offdiag together).
+        """
+        xp=self.xp
+        UL, UR, nx, ny, Lidx, Ridx, L = self.getLeftRightStates(
+            Qc, Xc, Xv, edges, edge2elem, ncells, gradQ, bc_type )
+        ds = xp.vstack((nx, ny)).T
+
+        faceVel = xp.zeros((UL.shape[0],))
+        jacL, jacR = flux_jacobians_fd(UL, UR, ds, faceVel, xp=self.xp)
+
+        jacL *= L[:,None,None]
+        jacR *= L[:,None,None]
+
+        Odq = xp.zeros_like(Qc)
+
+        # Left residual: + (J_L dq_L + J_R dq_R)
+        maskL = Lidx < ncells
+        if xp.any(maskL):
+            self.safe_add_at(Odq, Lidx[maskL],
+                             xp.einsum('nij,ni->nj', jacL[maskL], dq[Lidx[maskL]])
+                           + xp.einsum('nij,ni->nj', jacR[maskL], dq[Ridx[maskL]]))
+
+        # Right residual: - (J_L dq_L + J_R dq_R)
+        maskR = (Ridx >= 0) & (Ridx < ncells)
+        if xp.any(maskR):
+            self.safe_add_at(Odq, Ridx[maskR],
+                            -(xp.einsum('nij,ni->nj', jacL[maskR], dq[Lidx[maskR]])
+                            + xp.einsum('nij,ni->nj', jacR[maskR], dq[Ridx[maskR]])))
+
+        return Odq
+
+    def diagProduct(self, dq, Qc, Xc, Xv, edges, edge2elem, ncells,
+                    gradQ=None, bc_type=None, fluxType="Roe"):
+        xp=self.xp
+        UL, UR, nx, ny, Lidx, Ridx, L = self.getLeftRightStates(
+            Qc, Xc, Xv, edges, edge2elem, ncells, gradQ, bc_type)
+        ds = xp.vstack((nx, ny)).T
+
+        faceVel = xp.zeros((UL.shape[0],))
+        jacL, jacR = flux_jacobians_fd(UL, UR, ds, faceVel, xp=self.xp)
+
+        jacL *= L[:,None,None]
+        jacR *= L[:,None,None]
+
+        Odq = xp.zeros_like(Qc)
+        
+        # Left diagonal: + J_L dq_L
+        maskL = Lidx < ncells
+        self.safe_add_at(Odq, Lidx[maskL],
+                         xp.einsum('nij,ni->nj', jacL[maskL], dq[Lidx[maskL]]))
+
+        # Right diagonal: - J_R dq_R
+        maskR = (Ridx >= 0) & (Ridx < ncells)
+        if xp.any(maskR):
+            self.safe_add_at(Odq, Ridx[maskR],
+                         -xp.einsum('nij,ni->nj', jacR[maskR], dq[Ridx[maskR]]))
+
+        return Odq
+
+
+    def offDiagProduct(self, dq, Qc, Xc, Xv, edges, edge2elem, ncells,
+                       gradQ=None, bc_type=None, fluxType="Roe"):
+        xp=self.xp
+        UL, UR, nx, ny, Lidx, Ridx, L = self.getLeftRightStates(
+            Qc, Xc, Xv, edges, edge2elem, ncells, gradQ, bc_type )
+        ds = xp.vstack((nx, ny)).T
+        
+        faceVel = xp.zeros((UL.shape[0],))
+        jacL, jacR = flux_jacobians_fd(UL, UR, ds, faceVel, xp=self.xp)
+        
+        jacL *= L[:,None,None]
+        jacR *= L[:,None,None]
+        
+        Odq = xp.zeros_like(Qc)
+        print("jacL.shape=",jacL.shape)
+        print("Lidx.shape=",Lidx.shape)
+        print("dq.shape=",dq.shape)
+        print("dq[Lidx].shape=",dq[Lidx].shape)
+        OdqL = xp.einsum('nij,ni->nj',jacL,dq[Lidx])
+        OdqR = xp.einsum('nij,ni->nj',jacR,dq[Ridx])
+        
+        # Left off-diagonal: + J_R dq_R
+        maskL = Lidx < ncells
+        self.safe_add_at(Odq, Lidx[maskL], OdqR[maskL])
+        # Right off-diagonal: - J_L dq_L
+        maskR = (Ridx >= 0) & (Ridx < ncells)
+        if xp.any(maskR):
+            self.safe_add_at(Odq, Ridx[maskR],-OdqR[maskR])
+        return Odq    
     

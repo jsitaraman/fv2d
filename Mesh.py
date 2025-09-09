@@ -128,6 +128,7 @@ class Mesh:
         self.coords = coords[inverse[:len(coords)]]  # keep original floats for unique nodes
 
     def build_edge_to_elem(self):
+        # TODO this will not work yet with quads
         edges = []           # Store edges in original order
         edge_lookup = {}     # Map sorted vertex pair -> edge index
         edge2elem = []
