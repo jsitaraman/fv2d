@@ -527,7 +527,7 @@ class solver_utils:
         return R
 
     # --- main: residual ---
-    def JacobiansDiag(self,
+    def diagJacobians(self,
                       Qc,          # (Ne,4) cell-centered conservative variables
                       Xc,          # (Ne,2) element centroids
                       Xv,          # (Nv,2) node coordinates
@@ -588,20 +588,44 @@ class solver_utils:
 
         Odq = xp.zeros_like(Qc)
 
+        # Fe0,_ = roeflux(UL,UR,ds,faceVel)
+        # Fe0 *= L[:,None]
+        # UL, UR, nx, ny, Lidx, Ridx, L = self.getLeftRightStates(
+        #     Qc+dq, Xc, Xv, edges, edge2elem, ncells, gradQ, bc_type )
+        # Fe1,_ = roeflux(UL,UR,ds,faceVel)
+        # Fe1 *= L[:,None]
+        # print("Fe1-Fe0=",Fe1-Fe0)
+
+        # dF=Fe1-Fe0
+        # mask = Lidx < ncells
+        # dJF = xp.zeros_like(UL)
+        # dJF[mask]=np.einsum('nij,nj->ni',jacL[mask],dq[Lidx[mask]])
+        # mask = (Ridx >=0) & (Ridx < ncells)
+        # dJF[mask]+=np.einsum('nij,nj->ni',jacR[mask],dq[Ridx[mask]])
+        # print("norm(dF-dJF)=",xp.linalg.norm(dF-dJF))
+        
         # Left residual: + (J_L dq_L + J_R dq_R)
         maskL = Lidx < ncells
+
+        dFl = xp.einsum('nij,nj->ni',jacL,dq[Lidx])
+        dFr = xp.einsum('nij,nj->ni',jacR,dq[Ridx])
+        
         if xp.any(maskL):
-            self.safe_add_at(Odq, Lidx[maskL],
-                             xp.einsum('nij,ni->nj', jacL[maskL], dq[Lidx[maskL]])
-                           + xp.einsum('nij,ni->nj', jacR[maskL], dq[Ridx[maskL]]))
+            self.safe_add_at(Odq, Lidx[maskL], (dFl+dFr)[maskL])
+            #self.safe_add_at(Odq, Lidx[maskL],
+            #                 xp.einsum('nij,nj->ni', jacL[maskL], dq[Lidx[maskL]])
+            #               + xp.einsum('nij,nj->ni', jacR[maskR], dq[Ridx[maskR]]))
 
         # Right residual: - (J_L dq_L + J_R dq_R)
         maskR = (Ridx >= 0) & (Ridx < ncells)
-        if xp.any(maskR):
-            self.safe_add_at(Odq, Ridx[maskR],
-                            -(xp.einsum('nij,ni->nj', jacL[maskR], dq[Lidx[maskR]])
-                            + xp.einsum('nij,ni->nj', jacR[maskR], dq[Ridx[maskR]])))
 
+        if xp.any(maskR):
+            self.safe_add_at(Odq, Ridx[maskR], -(dFl+dFr)[maskR])
+            #self.safe_add_at(Odq, Ridx[maskR],
+            #                -(xp.einsum('nij,nj->ni', jacL[maskL], dq[Lidx[maskL]])
+            #                + xp.einsum('nij,nj->ni', jacR[maskR], dq[Ridx[maskR]])))
+        # print("Odq=",Odq)
+        # print("sum(Odq)=",np.sum(Odq))
         return Odq
 
     def diagProduct(self, dq, Qc, Xc, Xv, edges, edge2elem, ncells,
@@ -618,17 +642,18 @@ class solver_utils:
         jacR *= L[:,None,None]
 
         Odq = xp.zeros_like(Qc)
+
+        dFl = xp.einsum('nij,nj->ni',jacL,dq[Lidx])
+        dFr = xp.einsum('nij,nj->ni',jacR,dq[Ridx])
         
         # Left diagonal: + J_L dq_L
         maskL = Lidx < ncells
-        self.safe_add_at(Odq, Lidx[maskL],
-                         xp.einsum('nij,ni->nj', jacL[maskL], dq[Lidx[maskL]]))
+        self.safe_add_at(Odq, Lidx[maskL], dFl[maskL])
 
         # Right diagonal: - J_R dq_R
         maskR = (Ridx >= 0) & (Ridx < ncells)
         if xp.any(maskR):
-            self.safe_add_at(Odq, Ridx[maskR],
-                         -xp.einsum('nij,ni->nj', jacR[maskR], dq[Ridx[maskR]]))
+            self.safe_add_at(Odq, Ridx[maskR], -dFr[maskR])
 
         return Odq
 
@@ -647,19 +672,16 @@ class solver_utils:
         jacR *= L[:,None,None]
         
         Odq = xp.zeros_like(Qc)
-        print("jacL.shape=",jacL.shape)
-        print("Lidx.shape=",Lidx.shape)
-        print("dq.shape=",dq.shape)
-        print("dq[Lidx].shape=",dq[Lidx].shape)
-        OdqL = xp.einsum('nij,ni->nj',jacL,dq[Lidx])
-        OdqR = xp.einsum('nij,ni->nj',jacR,dq[Ridx])
+
+        dFl = xp.einsum('nij,nj->ni',jacL,dq[Lidx])
+        dFr = xp.einsum('nij,nj->ni',jacR,dq[Ridx])
         
         # Left off-diagonal: + J_R dq_R
         maskL = Lidx < ncells
-        self.safe_add_at(Odq, Lidx[maskL], OdqR[maskL])
+        self.safe_add_at(Odq, Lidx[maskL], dFr[maskL])
         # Right off-diagonal: - J_L dq_L
         maskR = (Ridx >= 0) & (Ridx < ncells)
         if xp.any(maskR):
-            self.safe_add_at(Odq, Ridx[maskR],-OdqR[maskR])
+            self.safe_add_at(Odq, Ridx[maskR],-dFl[maskR])
         return Odq    
     

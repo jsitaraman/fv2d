@@ -18,6 +18,7 @@ class Solver:
         self.coords = mesh.coords
         self.elems  = mesh.elems
         # optionally plot the mesh
+        print("\n..after adding ghosts and removing duplicates \n")
         mesh.info()
         #mesh.plot2d()        
         # element 2 element connectivity
@@ -191,12 +192,15 @@ class Solver:
         # zero out gradients for halo cells for now
         self.weights[self.nelem:,...]=0
         
-    def residual(self,q):
+    def residual(self,q , use_grad=True):
         self.computeGradientWeights()
         dq=q[self.idx]
         # compute least-square gradients by taking the tensor product
         # with LSQ weights
-        grads = np.einsum('nij,nik->nkj', self.weights, dq)
+        if use_grad:
+            grads = np.einsum('nij,nik->nkj', self.weights, dq)
+        else:
+            grads = None
         # compute the residual
         R=self.su.residual(q,
                            self.centroids[:,:2],
@@ -207,21 +211,21 @@ class Solver:
 
     def fd_check(self, Qc, dq):
         """Finite-difference check for Jacobian–vector product."""
-        R0 = self.residual(Qc)       # baseline residual
-        R1 = self.residual(Qc + dq)  # perturbed residual
-        return (R1 - R0)             # approximate J*dq
+        R0 = self.residual(Qc, use_grad=False)       # baseline residual
+        R1 = self.residual(Qc + dq, use_grad=False)  # perturbed residual
+        return (R1 - R0)                             # approximate J*dq
 
     def checkJac_fd(self):
         xp=self.xp
-        eps=1e-6
+        eps=1e-8
         dq_test = xp.random.randn(self.q.shape[0],4)*eps
         dq_test[self.nelem:,...]=0
         Jdq_fd = self.fd_check(self.q,dq_test)
         Ff=self.su.fullJacobianProduct(dq_test,self.q,self.centroids[:,:2],self.coords[:,:2],
                                        self.edges,self.edge2elem, self.nelem)
         Ff=-Ff/self.areas
-        print("Jdq_fd=",Jdq_fd)
-        print("Ff=",Ff)
+        # print("Jdq_fd=",Jdq_fd)
+        # print("Ff=",Ff)
         print("‖FD - Matvec‖ =", xp.linalg.norm(Jdq_fd[:self.nelem,:] - Ff[:self.nelem,:]))
         
     def jacobian_check(self,q):
@@ -236,9 +240,30 @@ class Solver:
                                   self.edges,self.edge2elem,self.nelem)
         Ff=self.su.fullJacobianProduct(dq_test,q,self.centroids[:,:2],self.coords[:,:2],
                                        self.edges,self.edge2elem, self.nelem)
-
+        D=self.su.diagJacobians(q,self.centroids[:,:2],self.coords[:,:2],
+                                self.edges,self.edge2elem,self.nelem)
         print("‖(Fd+Fo) - Ff‖ =", xp.linalg.norm((Fd + Fo) - Ff))
-    
+        print("‖(Fd - Dq‖ =", xp.linalg.norm(Fd - np.einsum('nij,nj->ni',D,dq_test)))
+
+    def getDiagJacobian(self,dt, factor):
+        D=self.su.diagJacobians(self.q,self.centroids[:,:2],self.coords[:,:2],
+                                self.edges,self.edge2elem,self.nelem)
+        D/=self.areas[:,None]
+        alpha=factor/dt
+        for i in range(self.nq):
+            D[:, i, i] += alpha
+        return D
+
+    def getUnsteadyResidual(self, qn, qnn, dt):
+        R=self.residual(self.q)
+        factor=1.5
+        if self.time > dt:
+            R -= (3*self.q - 4*qn + qnn)/(2*dt)            
+        else:
+            R -= (self.q - qn)/dt
+            factor=1
+        return R, factor
+        
     def advance(self,dt,scheme="RK3"):
         self.time+=dt
         if scheme=="ForwardEuler":
@@ -273,3 +298,24 @@ class Solver:
             R = self.residual(self.q)
             self.q = (1.0/3.0) * qn + (2.0/3.0) * (q2 + dt * R)
             
+    def linearIterations(self, D, R, nlinear, dq=None):
+        dq=np.zeros_like(R)
+        for k in range(nlinear):
+            if k > 0:
+                Fo=self.su.offDiagProduct(dq,self.q,self.centroids[:,:2],self.coords[:,:2],
+                                          self.edges,self.edge2elem,self.nelem)
+                B = R-Fo/self.areas
+            else:
+                B = R
+            Ddq = np.einsum('nij,nj->ni',D,dq)
+            print(f"\t\t {k} {np.linalg.norm(B-Ddq)}")
+            dq = np.linalg.solve(D, B[..., None])[..., 0]
+        return dq
+
+    def shiftTime(self,dt,q,qn,qnn):
+        qnn[:]=qn[:]
+        qn[:]=q[:]
+        self.time+=dt
+        
+    def update(self,dq):
+        self.q+=dq
