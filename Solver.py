@@ -297,6 +297,8 @@ class Solver:
             self.q = q2
             R = self.residual(self.q)
             self.q = (1.0/3.0) * qn + (2.0/3.0) * (q2 + dt * R)
+        self.applyBC()
+        print(f"\t Residual {np.linalg.norm(R)}")
             
     def linearIterations(self, D, R, nlinear, dq=None):
         dq=np.zeros_like(R)
@@ -316,6 +318,13 @@ class Solver:
         qnn[:]=qn[:]
         qn[:]=q[:]
         self.time+=dt
+
+    def applyBC(self):
+        X=self.centroids[self.nelem:,:2]
+        bc_q = self.vortex.init_Q(X,x0=10+self.uinf*self.time,y0=5,uinf=self.uinf,vinf=0)
+        self.q[self.nelem:,:] = bc_q
         
     def update(self,dq):
         self.q+=dq
+        self.applyBC()
+        

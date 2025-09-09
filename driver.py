@@ -2,7 +2,7 @@ from Mesh import Mesh
 from Solver import Solver
 import numpy as np
 # read the mesh (TODO: read BC's also)
-mesh = Mesh("finer.ugrid")
+mesh = Mesh("coarse.ugrid")
 # create the solver
 solver= Solver(mesh)
 print("\n-- testing cell wise gradient reconstruction --")
@@ -17,9 +17,9 @@ print("\n-- check jacobian products ---")
 solver.jacobian_check(solver.q)
 # show some plots
 solver.output()
-dt=0.1
+dt=0.5
 nsubit=5
-nlinear=5
+nlinear=10
 nsteps=100
 time=0
 explicit=False

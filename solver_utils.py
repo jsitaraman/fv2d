@@ -360,7 +360,7 @@ class solver_utils:
         else:
             raise TypeError(f"Unsupported xp module: {xp}")
 
-    def getLeftRightStates(self, Qc, Xc, Xv, edges, edge2elem, ncell, gradQ, bc_type):
+    def getLeftRightStates(self, Qc, Xc, Xv, edges, edge2elem, ncell, gradQ, bc_type, gradQnode=None):
         
         xp = self.xp
         Ne = Qc.shape[0]
@@ -480,6 +480,7 @@ class solver_utils:
                  ncells,
                  gradQ=None,  # optional (Ne,4,2) gradients for linear recon; None => 1st order
                  bc_type=None, # optional (Nedge,) strings: "internal"|"farfield"|"wall"
+                 gradQnode=None,
                  fluxType="Roe"
                  ):
         """
@@ -491,7 +492,7 @@ class solver_utils:
         xp=self.xp
         UL,UR,nx,ny, Lidx, Ridx, L = self.getLeftRightStates( Qc, Xc, Xv, edges,
                                                            edge2elem, ncells,
-                                                           gradQ, bc_type)
+                                                              gradQ, bc_type, gradQnode)
         if fluxType=="Lax" or fluxType=="Rusanov":
             # --- Rusanov flux: F* = 0.5[(F_L + F_R)·n - smax (UR - UL)] ---
             FLn = self._flux_dot_n(UL, nx, ny)
