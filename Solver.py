@@ -308,7 +308,7 @@ class Solver:
             else:
                 B = R
             Ddq = np.einsum('nij,nj->ni',D,dq)
-            print(f"\t\t {k} {np.linalg.norm(B-Ddq)}")
+            print(f"\t\t linear{k} {np.linalg.norm(B-Ddq)}")
             dq = np.linalg.solve(D, B[..., None])[..., 0]
         return dq
 
