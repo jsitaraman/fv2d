@@ -7,10 +7,12 @@ from flux import roeflux,  flux_jacobians_fd
 
 class solver_utils:
     def __init__(self, use_cupy=False):
+        self.use_cupy=use_cupy
         try:
             self.xp = __import__('cupy' if use_cupy else 'numpy')
         except:
             self.xp = __import__('numpy')
+            self.use_cupy=False
         
     def setParams(self, props):
         self.gamma=props['gamma']
@@ -33,6 +35,10 @@ class solver_utils:
             levels : number of contour levels
             cmap : colormap
         """
+        if self.use_cupy:
+            Xv=self.xp.asnumpy(Xv)
+            E=self.xp.asnumpy(E)
+            Qc=self.xp.asnumpy(Qc)
         gamma = self.gamma
         rho = Qc[:, 0]
         u   = Qc[:, 1] / rho
@@ -426,12 +432,14 @@ class solver_utils:
                                                               gradQ[Ridx[internal_mask]], dR)
 
         # boundary edges: build by BC
+        bc_map = {"internal": 0, "farfield": 1, "wall": 2 }
         if bc_type is None:
             # default: far-field on boundary
-            bc_type = xp.array(["farfield" if b else "internal" for b in bnd_mask.tolist()])
+            bc_type = xp.array([bc_map["farfield"] if b else bc_map["internal"]
+                        for b in bnd_mask.tolist()], dtype=xp.int32)
         else:
             # convert Python list/np array of strings to xp array of dtype object if needed
-            bc_type = xp.array(bc_type)
+            bc_type = xp.array([bc_map[s] for s in bc_type], dtype=xp.int32)
 
         if xp.any(bnd_mask):
             # slice arrays for boundary set
@@ -445,8 +453,8 @@ class solver_utils:
             UR_b = xp.empty_like(UL_b)
 
             # masks per BC
-            is_wall = xp.array([bt == "wall" for bt in bc_type[bnd_mask].tolist()])
-            is_far  = xp.array([bt == "farfield" for bt in bc_type[bnd_mask].tolist()])
+            is_wall = bc_type[bnd_mask] == bc_map["wall"]
+            is_far  = bc_type[bnd_mask] == bc_map["farfield"]
 
             # --- WALL (slip): reflect normal velocity ---
             if xp.any(is_wall):

@@ -1,10 +1,16 @@
 from Mesh import Mesh
 from Solver import Solver
+from Timer import Timer
+import sys
 import numpy as np
+#
+use_gpu = len(sys.argv) > 1 and sys.argv[1] == "--gpu"
+# create timer
+timer=Timer(use_gpu=use_gpu)
 # read the mesh (TODO: read BC's also)
 mesh = Mesh("finer.ugrid")
 # create the solver
-solver= Solver(mesh)
+solver= Solver(mesh, use_cupy=use_gpu)
 print("\n-- testing cell wise gradient reconstruction --")
 solver.test_gradients()
 print("\n-- testing nodal gradients --")
@@ -27,6 +33,7 @@ explicit=False
 if not explicit:
   qn=np.zeros_like(solver.q)
   qnn=qn.copy()
+timer.start()
 for i in range(nsteps):
    print(f"i={i}")
    time+=dt
@@ -40,4 +47,5 @@ for i in range(nsteps):
          D=solver.getDiagJacobian(dt,dtfac)
          dq=solver.linearIterations(D, R, nlinear)
          solver.update(dq)
+timer.stop()
 solver.output()
