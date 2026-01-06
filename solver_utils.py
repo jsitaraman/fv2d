@@ -1,6 +1,7 @@
 from IsentropicVortex import IsentropicVortex
 import matplotlib.pyplot as plt
 import matplotlib.tri as mtri
+import matplotlib.ticker as ticker
 from scipy.interpolate import griddata
 import numpy as np
 from flux import roeflux,  flux_jacobians_fd
@@ -89,8 +90,8 @@ class solver_utils:
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12,6))
 
         # contour plot
-        tcf = ax1.tricontourf(triang, qnodal, levels=levels, cmap=cmap)
-        fig.colorbar(tcf, ax=ax1, label=field, orientation='horizontal',pad=0.1)
+        tcf = ax1.tricontourf(triang, qnodal, np.linspace(qnodal.min(),0.9995,10), cmap=cmap, extend='neither')
+        fig.colorbar(tcf, ax=ax1, label=field, orientation='horizontal',pad=0.1, format=ticker.StrMethodFormatter('{x:.4f}'))
         if show_mesh:
             ax1.triplot(triang, color="k", lw=0.3, alpha=0.5)
         ax1.set_aspect("equal")
